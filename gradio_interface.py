@@ -1,3 +1,6 @@
+import multiprocessing
+multiprocessing.set_start_method('spawn', force=True)
+
 import torch
 import torchaudio
 import gradio as gr
@@ -7,12 +10,10 @@ from zonos.model import Zonos, DEFAULT_BACKBONE_CLS as ZonosBackbone
 from zonos.conditioning import make_cond_dict, supported_language_codes
 from zonos.utils import DEFAULT_DEVICE as device
 
+# Model Management
+device = "cuda"
 CURRENT_MODEL_TYPE = None
 CURRENT_MODEL = None
-
-SPEAKER_EMBEDDING = None
-SPEAKER_AUDIO_PATH = None
-
 
 def load_model_if_needed(model_choice: str):
     global CURRENT_MODEL_TYPE, CURRENT_MODEL
@@ -26,7 +27,6 @@ def load_model_if_needed(model_choice: str):
         CURRENT_MODEL_TYPE = model_choice
         print(f"{model_choice} model loaded successfully!")
     return CURRENT_MODEL
-
 
 def update_ui(model_choice):
     """
@@ -81,7 +81,6 @@ def update_ui(model_choice):
         unconditional_keys_update,
     )
 
-
 def generate_audio(
     model_choice,
     text,
@@ -114,10 +113,7 @@ def generate_audio(
     unconditional_keys,
     progress=gr.Progress(),
 ):
-    """
-    Generates audio based on the provided UI parameters.
-    We do NOT use language_id or ctc_loss even if the model has them.
-    """
+    """Generates audio based on the provided UI parameters."""
     selected_model = load_model_if_needed(model_choice)
 
     speaker_noised_bool = bool(speaker_noised)
@@ -135,20 +131,15 @@ def generate_audio(
     seed = int(seed)
     max_new_tokens = 86 * 30
 
-    # This is a bit ew, but works for now.
-    global SPEAKER_AUDIO_PATH, SPEAKER_EMBEDDING
-
     if randomize_seed:
         seed = torch.randint(0, 2**32 - 1, (1,)).item()
     torch.manual_seed(seed)
 
+    speaker_embedding = None
     if speaker_audio is not None and "speaker" not in unconditional_keys:
-        if speaker_audio != SPEAKER_AUDIO_PATH:
-            print("Recomputed speaker embedding")
-            wav, sr = torchaudio.load(speaker_audio)
-            SPEAKER_EMBEDDING = selected_model.make_speaker_embedding(wav, sr)
-            SPEAKER_EMBEDDING = SPEAKER_EMBEDDING.to(device, dtype=torch.bfloat16)
-            SPEAKER_AUDIO_PATH = speaker_audio
+        wav, sr = torchaudio.load(speaker_audio)
+        speaker_embedding = selected_model.make_speaker_embedding(wav, sr)
+        speaker_embedding = speaker_embedding.to(device, dtype=torch.bfloat16)
 
     audio_prefix_codes = None
     if prefix_audio is not None:
@@ -166,7 +157,7 @@ def generate_audio(
     cond_dict = make_cond_dict(
         text=text,
         language=language,
-        speaker=SPEAKER_EMBEDDING,
+        speaker=speaker_embedding,
         emotion=emotion_tensor,
         vqscore_8=vq_tensor,
         fmax=fmax,
@@ -203,7 +194,6 @@ def generate_audio(
         wav_out = wav_out[0:1, :]
     return (sr_out, wav_out.squeeze().numpy()), seed
 
-
 def build_interface():
     supported_models = []
     if "transformer" in ZonosBackbone.supported_architectures:
@@ -230,7 +220,7 @@ def build_interface():
                     label="Text to Synthesize",
                     value="Zonos uses eSpeak for text to phoneme conversion!",
                     lines=4,
-                    max_length=500,  # approximately
+                    max_length=500,
                 )
                 language = gr.Dropdown(
                     choices=supported_language_codes,
@@ -408,14 +398,15 @@ def build_interface():
                 randomize_seed_toggle,
                 unconditional_keys,
             ],
-            outputs=[output_audio, seed_number],
+            outputs=[output_audio, seed_number]
         )
 
     return demo
 
-
-if __name__ == "__main__":
+def run_gradio():
     demo = build_interface()
     share = getenv("GRADIO_SHARE", "False").lower() in ("true", "1", "t")
-    host = getenv("GRADIO_HOST", "0.0.0.0")
-    demo.launch(server_name=host, inbrowser=True, share=share)
+    demo.launch(server_name="0.0.0.0", server_port=7860, share=share)
+
+if __name__ == "__main__":
+    run_gradio()
